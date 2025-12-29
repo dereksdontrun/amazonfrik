@@ -9,6 +9,14 @@ class AmazonShipmentNotifier
 {
     private $logger;
 
+    /** @var array|null */
+    private $last_error = null;
+
+    public function getLastError()
+    {
+        return $this->last_error;
+    }    
+
     public function __construct($logger = null)
     {
         $this->logger = $logger;
@@ -16,6 +24,8 @@ class AmazonShipmentNotifier
 
     public function notifyShipment($amazonOrderId, $marketplaceId, $trackingNumber, $carrierCode, $shippingMethod, $shipDate, $orderItems)
     {
+        $this->last_error = null;
+
         try {
             $client = new AmazonSpApiClient();
 
@@ -24,7 +34,7 @@ class AmazonShipmentNotifier
                 'packageDetail' => [
                     'packageReferenceId' => '1', // paquete único
                     'carrierCode' => $carrierCode,
-                    'carrierName' => $carrierCode, 
+                    'carrierName' => $carrierCode,
                     'shippingMethod' => $shippingMethod,
                     'trackingNumber' => $trackingNumber,
                     'shipDate' => $shipDate,
@@ -33,7 +43,7 @@ class AmazonShipmentNotifier
                 ],
                 'codCollectionMethod' => 'DirectPayment' // no hacemos contra reembolso
             ];
-            
+
             $path = '/orders/v0/orders/' . urlencode($amazonOrderId) . '/shipmentConfirmation';
             //llamamos a la API, si es correcto la API no devuelve nada (HTTP 204 No Content) y si no es correcto, lanzamos allí una excepción que se recoge aquí
             $client->call('POST', $path, $body);
@@ -44,6 +54,18 @@ class AmazonShipmentNotifier
 
             return true;
         } catch (Exception $e) {
+            $this->last_error = [
+                'code' => 'SPAPI_ERROR',
+                'message' => $e->getMessage(),
+            ];
+
+            // Si el mensaje tiene CODE=..., lo sacamos para tener un código más útil
+            if (preg_match('/\bCODE=([^\s]+)\b/', $e->getMessage(), $m)) {
+                $this->last_error['code'] = 'SPAPI_' . $m[1]; // ej SPAPI_InvalidInput
+            } elseif (preg_match('/\bHTTP=(\d{3})\b/', $e->getMessage(), $m)) {
+                $this->last_error['code'] = 'SPAPI_HTTP_' . $m[1]; // ej SPAPI_HTTP_400
+            }
+
             if ($this->logger) {
                 $this->logger->log("Error al confirmar envío: " . $e->getMessage(), 'ERROR');
             }
@@ -56,10 +78,10 @@ class AmazonShipmentNotifier
      * Primero intenta desde la tabla local, luego desde la API.
      *
      * @param string $amazon_order_id
-     * @param int $id_amazonfrik_order
+     * @param int $id_amazonfrik_orders
      * @return array
      */
-    public function getOrderItemsForShipment($amazon_order_id, $id_amazonfrik_order)
+    public function getOrderItemsForShipment($amazon_order_id, $id_amazonfrik_orders)
     {
         // 1. Intentar desde la tabla local
         $sql = '
@@ -67,7 +89,7 @@ class AmazonShipmentNotifier
                 amazon_order_item_id AS orderItemId,
                 quantity
             FROM `' . _DB_PREFIX_ . 'amazonfrik_order_detail`
-            WHERE id_amazonfrik_order = ' . (int) $id_amazonfrik_order;
+            WHERE id_amazonfrik_orders = ' . (int) $id_amazonfrik_orders;
 
         $items = Db::getInstance()->executeS($sql);
 
@@ -131,11 +153,10 @@ class AmazonShipmentNotifier
                 Db::getInstance()->insert(
                     'amazonfrik_order_detail',
                     [
-                        'id_amazonfrik_order' => (int) $id_amazonfrik_order,
+                        'id_amazonfrik_orders' => (int) $id_amazonfrik_orders,
                         'amazon_order_item_id' => pSQL($item['OrderItemId']),
                         'asin' => $asin,
                         'seller_sku' => $seller_sku,
-                        'prestashop_sku' => $seller_sku, // en tu caso son iguales
                         'id_product' => $id_product,
                         'id_product_attribute' => $id_product_attribute,
                         'product_name' => $product_name,

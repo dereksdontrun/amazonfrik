@@ -58,6 +58,9 @@ class Amazonfrik extends Module
         323 => ['SPRING', 'Signatured', 'Spring GDS - SIGNATURED'],
     ];
 
+    /** @var array|null */
+    public $lastShipmentResult = null;
+
     public function __construct()
     {
         $this->name = 'amazonfrik';
@@ -85,6 +88,10 @@ class Amazonfrik extends Module
             return false;
         }
 
+        if (!$this->installTab('AdminAmazonFrikOrders', 'AdminOrders', $this->name, 'Pedidos Amazon')) {
+            return false;
+        }
+
         return true;
 
         // Registrar hook personalizado NO ES NECESARIO PARA PERSONALIZADOS
@@ -102,46 +109,129 @@ class Amazonfrik extends Module
         // return $this->createTables();
     }
 
-    public function uninstall()
+    protected function installTab($classname = false, $parent = false, $module = false, $displayname = false)
     {
-        // $this->dropTables();
-        return parent::uninstall();
-    }
+        if (!$classname)
+            return true;
 
-    private function createTables()
-    {
-        $sql = 'CREATE TABLE IF NOT EXISTS `' . _DB_PREFIX_ . 'amazonfrik_orders` (
-            `id_amazonfrik_order` INT(11) UNSIGNED NOT NULL AUTO_INCREMENT,
-            `amazon_order_id` VARCHAR(64) NOT NULL,
-            `marketplace` VARCHAR(64) NOT NULL,
-            `marketplace_id` VARCHAR(30) NOT NULL,
-            `id_order` INT(11) NULL DEFAULT NULL,
-            `order_status` VARCHAR(20) NOT NULL DEFAULT "imported",
-            `shipment_notified` TINYINT(1) NOT NULL DEFAULT "0",
-            `id_order_status_when_confirmed` INT(10) NULL DEFAULT NULL,
-            `tracking_number` VARCHAR(100) NULL DEFAULT NULL,
-            `carrier_code` VARCHAR(50) NULL DEFAULT NULL,
-            `shipping_method` VARCHAR(100) NULL DEFAULT NULL,
-            `shipping_deadline` DATE NULL DEFAULT NULL,
-            `ship_service_level` VARCHAR(50) NULL DEFAULT NULL,
-            `order_total` DECIMAL(20,6) NULL DEFAULT NULL,
-            `currency` VARCHAR(10) NULL DEFAULT NULL,
-            `ship_date` DATE NULL DEFAULT NULL,
-            `last_notification_attempt` DATETIME NULL DEFAULT NULL,
-            `notification_error` TEXT NULL DEFAULT NULL,
-            `date_add` DATETIME NOT NULL,
-            `date_upd` DATETIME NOT NULL,
-            PRIMARY KEY (`id_amazonfrik_order`),
-            UNIQUE KEY `uniq_amazon_order` (`amazon_order_id`, `marketplace_id`),
-            KEY `idx_id_order` (`id_order`)
-        ) ENGINE=' . _MYSQL_ENGINE_ . ' DEFAULT CHARSET=utf8;';
+        $tab = new Tab();
+        $tab->class_name = $classname;
+        if ($parent)
+            if (!is_int($parent))
+                $tab->id_parent = (int) Tab::getIdFromClassName($parent);
+            else
+                $tab->id_parent = (int) $parent;
+        if (!$module)
+            $module = $this->name;
+        $tab->module = $module;
+        $tab->active = true;
+        if (!$displayname)
+            $displayname = $this->displayName;
+        $tab->name[(int) (Configuration::get('PS_LANG_DEFAULT'))] = $displayname;
 
-        if (!Db::getInstance()->execute($sql)) {
+        if (!$tab->add())
             return false;
-        }
 
         return true;
     }
+
+    /**
+     * Elimina la pestaña al desinstalar el módulo
+     */
+    protected function unInstallTab($classname = false)
+    {
+        if (!$classname)
+            return true;
+
+        $idTab = Tab::getIdFromClassName($classname);
+        if ($idTab) {
+            $tab = new Tab($idTab);
+            return $tab->delete();
+        }
+        return true;
+    }
+
+    public function uninstall()
+    {
+        $this->unInstallTab('AdminAmazonFrikOrders');
+
+        // $this->dropTables();
+
+        return parent::uninstall();
+    }
+
+    // private function createTables()
+    // {
+    //     $sql = 'CREATE TABLE IF NOT EXISTS `lafrips_amazonfrik_orders` (
+    //         `id_amazonfrik_orders` INT(11) UNSIGNED NOT NULL AUTO_INCREMENT,
+    //         `amazon_order_id` VARCHAR(64) NOT NULL COMMENT 'Order ID from Amazon',
+    //         `marketplace` VARCHAR(64) NOT NULL COMMENT 'Ej: Amazon.es, Amazon.co.uk',
+    //         `marketplace_id` VARCHAR(30) NOT NULL COMMENT 'Amazon marketplace ID (e.g., A1F83G8C2ARO7P)',
+    //         `id_order` INT(11) NULL DEFAULT NULL COMMENT 'PrestaShop order ID (from ps_orders)',
+    //         `order_status` VARCHAR(20) NOT NULL DEFAULT 'imported' COMMENT 'imported, shipped, error, cancelled, etc.',
+    //         `shipment_notified` TINYINT(1) NOT NULL DEFAULT '0' COMMENT '1 if shipment confirmation was sent to Amazon',
+    //         `id_order_status_when_confirmed` INT(10) NULL DEFAULT NULL COMMENT 'Estado de pedido de PrestaShop cuando se confirmo envio',
+    //         `tracking_number` VARCHAR(100) NULL DEFAULT NULL,
+    //         `carrier_code` VARCHAR(50) NULL DEFAULT NULL COMMENT 'Amazon carrier code (e.g., CORREOS, UPS, etc.)',
+    //         `shipping_method` VARCHAR(100) NULL DEFAULT NULL,
+    //         `shipping_deadline` DATETIME NULL DEFAULT NULL,
+    //         `ship_service_level` VARCHAR(50) NULL DEFAULT NULL COMMENT 'ShipServiceLevel from Amazon',
+    //         `order_total` DECIMAL(20,6) NULL DEFAULT NULL COMMENT 'OrderTotal.Amount',
+    //         `currency` VARCHAR(10) NULL DEFAULT NULL COMMENT 'OrderTotal.CurrencyCode',
+    //         `ship_date` DATETIME NULL DEFAULT NULL,
+    //         `last_notification_attempt` DATETIME NULL DEFAULT NULL,
+    //         `notification_error` TEXT NULL DEFAULT NULL,
+    //         `date_add` DATETIME NOT NULL,
+    //         `date_upd` DATETIME NOT NULL,
+    //         PRIMARY KEY (`id_amazonfrik_orders`),
+    //         UNIQUE KEY `uniq_amazon_order` (`amazon_order_id`, `marketplace_id`),
+    //         KEY `idx_id_order` (`id_order`),
+    //         KEY `idx_pending` (`shipment_notified`, `order_status`, `last_notification_attempt`),
+    //         KEY `idx_marketplace` (`marketplace_id`, `amazon_order_id`),
+    //         KEY `idx_tracking` (`tracking_number`)
+    //         ) ENGINE=' . _MYSQL_ENGINE_ . ' DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;';        
+
+    //     if (!Db::getInstance()->execute($sql)) {
+    //         return false;
+    //     }
+
+    //     return true;
+
+    // CREATE TABLE IF NOT EXISTS `lafrips_amazonfrik_order_detail` (
+    // `id_amazonfrik_order_detail` INT(11) UNSIGNED NOT NULL AUTO_INCREMENT,
+    // `id_amazonfrik_orders` INT(11) UNSIGNED NOT NULL,
+
+    // -- Clave para confirmar envío
+    // `amazon_order_item_id` VARCHAR(50) NOT NULL COMMENT 'OrderItemId (obligatorio para /shipment)',
+
+    // -- SKU y ASIN
+    // `asin` VARCHAR(20) NULL DEFAULT NULL COMMENT 'ASIN de Amazon (ej. B004EFUQ38)',
+    // `seller_sku` VARCHAR(100) NULL DEFAULT NULL COMMENT 'SellerSKU = SKU en PrestaShop',
+
+    // -- PrestaShop  
+    // `id_product` INT(11) UNSIGNED NULL DEFAULT NULL,
+    // `id_product_attribute` INT(11) UNSIGNED NULL DEFAULT NULL,
+
+    // -- Otros datos útiles
+    // `product_name` VARCHAR(255) NULL DEFAULT NULL,
+    // `quantity` INT(11) UNSIGNED NOT NULL,
+    // `item_price` DECIMAL(20,6) NULL DEFAULT NULL,
+    // `item_tax` DECIMAL(20,6) NULL DEFAULT NULL,
+
+    // PRIMARY KEY (`id_amazonfrik_order_detail`),
+    // UNIQUE KEY `uniq_order_item` (`id_amazonfrik_orders`, `amazon_order_item_id`),
+    // KEY `idx_id_amazonfrik_orders` (`id_amazonfrik_orders`),
+    // KEY `idx_amazon_order_item_id` (`amazon_order_item_id`),
+    // KEY `idx_asin` (`asin`),
+    // KEY `idx_seller_sku` (`seller_sku`),
+    // KEY `idx_id_product` (`id_product`),
+    // KEY `idx_order_sku` (`id_amazonfrik_orders`, `seller_sku`),
+    // CONSTRAINT `fk_amazonfrik_order` 
+    //     FOREIGN KEY (`id_amazonfrik_orders`) 
+    //     REFERENCES `lafrips_amazonfrik_orders` (`id_amazonfrik_orders`) 
+    //     ON DELETE CASCADE
+    // ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    // }
 
     private function dropTables()
     {
@@ -195,13 +285,13 @@ class Amazonfrik extends Module
 
         $id_order_status = (int) $new_status->id;
 
-        $sql = 'SELECT id_amazonfrik_order FROM `' . _DB_PREFIX_ . 'amazonfrik_orders`
+        $sql = 'SELECT id_amazonfrik_orders FROM `' . _DB_PREFIX_ . 'amazonfrik_orders`
         WHERE `id_order` = ' . (int) $id_order . '
         AND `shipment_notified` = 0';
 
-        $id_amazonfrik_order = Db::getInstance()->getValue($sql);
+        $id_amazonfrik_orders = Db::getInstance()->getValue($sql);
 
-        if (!$id_amazonfrik_order) {
+        if (!$id_amazonfrik_orders) {
             return;
         }
 
@@ -221,11 +311,22 @@ class Amazonfrik extends Module
         $tracking_number = $order_carrier->tracking_number ?: null;
 
         if (!$tracking_number) {
+            $this->appendNotificationError($id_amazonfrik_orders, 'NO_TRACKING', 'Cambio de estado a enviado/etiquetado pero sin tracking en order_carrier');
             return;
         }
 
+        //antes de intentar la confirmación, almacenamos el tracking
+        Db::getInstance()->update(
+            'amazonfrik_orders',
+            [
+                'tracking_number' => pSQL($tracking_number),
+                'date_upd' => date('Y-m-d H:i:s')
+            ],
+            'id_amazonfrik_orders=' . (int) $id_amazonfrik_orders
+        );
+
         $this->markOrderAsShippedInAmazon(
-            (int) $id_amazonfrik_order,
+            (int) $id_amazonfrik_orders,
             $tracking_number,
             date('Y-m-d H:i:s'),
             $id_order_status
@@ -306,44 +407,85 @@ class Amazonfrik extends Module
         return (bool) $result;
     }
 
+    protected function setShipmentResult($ok, $code, $message, array $context = [])
+    {
+        $this->lastShipmentResult = [
+            'ok' => (bool) $ok,
+            'code' => (string) $code,
+            'message' => (string) $message,
+            'context' => $context,
+            'ts' => date('Y-m-d H:i:s'),
+        ];
+    }
+
+    public function getLastShipmentResult()
+    {
+        return $this->lastShipmentResult;
+    }
+
     /**
      * Confirma el envío de un pedido en Amazon SP-API y actualiza el estado local
      *
-     * @param int $id_amazonfrik_order ID en la tabla amazonfrik_orders
+     * @param int $id_amazonfrik_orders ID en la tabla amazonfrik_orders
      * @param string|null $tracking_number Número de seguimiento
      * @param string $carrier_name Nombre del transportista en PrestaShop
      * @param string $ship_date Fecha de envío (Y-m-d H:i:s)
      * @param int|null $id_order_status ID de estado del pedido
      * @return bool Éxito de la operación
      */
-    protected function markOrderAsShippedInAmazon($id_amazonfrik_order, $tracking_number, $ship_date, $id_order_status = null)
+    public function markOrderAsShippedInAmazon($id_amazonfrik_orders, $tracking_number, $ship_date, $id_order_status = null)
     {
         $logger = new LoggerFrik(
             _PS_MODULE_DIR_ . 'amazonfrik/logs/shipment_notify_' . date('Ymd') . '.txt',
             true,
             'sergio@lafrikileria.com'
         );
+
+        $this->setShipmentResult(false, 'INIT', 'Iniciando proceso', [
+            'id_amazonfrik_orders' => (int) $id_amazonfrik_orders
+        ]);
+
         $logger->log('================================================', 'INFO', false);
-        $logger->log("Iniciando notificación de envío para amazonfrik_order ID: {$id_amazonfrik_order}", 'DEBUG');
+        $logger->log("Iniciando notificación de envío para amazonfrik_order ID: {$id_amazonfrik_orders}", 'DEBUG');
 
         if (!$tracking_number) {
-            $logger->log('Pedido sin tracking number', 'ERROR');
+            $msg = 'Pedido sin tracking number';
+            $logger->log($msg, 'ERROR');
+            $this->appendNotificationError($id_amazonfrik_orders, 'NO_TRACKING', $msg);
+            $this->setShipmentResult(false, 'NO_TRACKING', $msg, [
+                'id_amazonfrik_orders' => (int) $id_amazonfrik_orders
+            ]);
             return false;
         }
 
         $sql = 'SELECT amazon_order_id, marketplace_id, id_order 
             FROM `' . _DB_PREFIX_ . 'amazonfrik_orders`
-            WHERE id_amazonfrik_order = ' . (int) $id_amazonfrik_order;
+            WHERE id_amazonfrik_orders = ' . (int) $id_amazonfrik_orders;
 
         $row = Db::getInstance()->getRow($sql);
         if (!$row) {
-            $logger->log('Pedido no encontrado en amazonfrik_orders', 'ERROR');
+            $msg = 'Pedido no encontrado en amazonfrik_orders';
+            $logger->log($msg, 'ERROR');
+            $this->appendNotificationError($id_amazonfrik_orders, 'NOT_FOUND', $msg);
+            $this->setShipmentResult(false, 'NOT_FOUND', $msg, [
+                'id_amazonfrik_orders' => (int) $id_amazonfrik_orders
+            ]);
             return false;
         }
 
         $amazon_order_id = $row['amazon_order_id'];
         $marketplace_id = $row['marketplace_id'];
         $id_order = (int) $row['id_order'];
+
+        $context = [
+            'id_amazonfrik_orders' => (int) $id_amazonfrik_orders,
+            'id_order' => (int) $id_order,
+            'amazon_order_id' => (string) $amazon_order_id,
+            'marketplace_id' => (string) $marketplace_id,
+            'tracking_number' => (string) $tracking_number,
+            'ship_date' => (string) $ship_date,
+            'id_order_status' => (int) $id_order_status,
+        ];
 
         $logger->log("Procesando pedido Prestashop {$id_order} - Amazon: {$amazon_order_id} (Marketplace: {$marketplace_id})", 'INFO');
 
@@ -356,27 +498,46 @@ class Amazonfrik extends Module
         $id_reference = $this->getCarrierReference($id_carrier);
 
         if (!$id_reference) {
-            $logger->log("Carrier sin id_reference: {$id_carrier}", 'ERROR');
+            $msg = "Carrier sin id_reference (id_carrier={$id_carrier})";
+            $logger->log($msg, 'ERROR');
+            $context['id_carrier'] = (int) $id_carrier;
+            $this->appendNotificationError($id_amazonfrik_orders, 'NO_CARRIER_REFERENCE', $msg);
+            $this->setShipmentResult(false, 'NO_CARRIER_REFERENCE', $msg, $context);
             return false;
         }
 
+        $context['id_carrier'] = (int) $id_carrier;
+        $context['id_reference'] = (int) $id_reference;
+
         // 2. Mapear a código Amazon, shipping method y nombre
         if (!isset($this->carrier_mapping[$id_reference])) {
-            $logger->log("Carrier reference no mapeado: {$id_reference}", 'ERROR');
+            $msg = "Carrier reference no mapeado: {$id_reference}";
+            $logger->log($msg, 'ERROR');
+            $this->appendNotificationError($id_amazonfrik_orders, 'CARRIER_NOT_MAPPED', $msg);
+            $this->setShipmentResult(false, 'CARRIER_NOT_MAPPED', $msg, $context);
             return false;
         }
 
         list($carrier_code, $shipping_method, $carrier_name) = $this->carrier_mapping[$id_reference];
 
+        $context['carrier_code'] = (string) $carrier_code;
+        $context['shipping_method'] = (string) $shipping_method;
+        $context['carrier_name'] = (string) $carrier_name;
+
         $logger->log("Carrier mapeado {$carrier_name}: {$id_reference} → {$carrier_code} / {$shipping_method}", 'INFO');
 
         // 3. Obtener orderItems reales de Amazon
         $notifier = new AmazonShipmentNotifier($logger);
-        $order_items = $notifier->getOrderItemsForShipment($amazon_order_id, $id_amazonfrik_order);
+        $order_items = $notifier->getOrderItemsForShipment($amazon_order_id, $id_amazonfrik_orders);
         if (empty($order_items)) {
-            $logger->log('No se pudieron obtener los items del pedido de Amazon', 'ERROR');
+            $msg = 'No se pudieron obtener los items del pedido de Amazon';
+            $logger->log($msg, 'ERROR');
+            $this->appendNotificationError($id_amazonfrik_orders, 'NO_ORDER_ITEMS', $msg);
+            $this->setShipmentResult(false, 'NO_ORDER_ITEMS', $msg, $context);
             return false;
         }
+
+        $context['order_items_count'] = is_array($order_items) ? count($order_items) : 0;
 
         // 4. Notificar a Amazon
         $success = $notifier->notifyShipment(
@@ -403,24 +564,35 @@ class Amazonfrik extends Module
         ];
 
         if (!$success) {
-            $update_data['notification_error'] = 'Error en llamada a SP-API (ver logs)';
+            $err = $notifier->getLastError();
+            $code = !empty($err['code']) ? $err['code'] : 'SPAPI_ERROR';
+            $msg = !empty($err['message']) ? $err['message'] : 'Error SP-API';
+
+            $this->appendNotificationError($id_amazonfrik_orders, $code, $this->truncate($msg, 1000));
+            $this->setShipmentResult(false, $code, $msg, $context);
+
+            // Importante: NO pisar notification_error aquí
+            unset($update_data['notification_error']);
         } else {
-            $update_data['notification_error'] = null;
+            $this->setShipmentResult(true, 'OK', 'Envío confirmado correctamente en Amazon.', $context);
+            // $update_data['notification_error'] = null;
         }
 
         Db::getInstance()->update(
             'amazonfrik_orders',
             $update_data,
-            'id_amazonfrik_order = ' . (int) $id_amazonfrik_order
+            'id_amazonfrik_orders = ' . (int) $id_amazonfrik_orders
         );
 
-        if ($success) {
-            $logger->log("Envío confirmado exitosamente en Amazon para id_order {$id_order} - {$amazon_order_id}", 'INFO');
-        } else {
-            $logger->log("Error, fallo al confirmar envío en Amazon para id_order {$id_order} - {$amazon_order_id}", 'ERROR');
-        }
+        return (bool) $success;
+    }
 
-        return $success;
+    protected function truncate($s, $max = 450)
+    {
+        $s = (string) $s;
+        if (Tools::strlen($s) <= $max)
+            return $s;
+        return Tools::substr($s, 0, $max - 3) . '...';
     }
 
     /**
@@ -431,7 +603,7 @@ class Amazonfrik extends Module
      */
     protected function getCarrierReference($id_carrier)
     {
-        return Db::getInstance()->getValue('
+        return (int) Db::getInstance()->getValue('
             SELECT id_reference FROM `' . _DB_PREFIX_ . 'carrier`
             WHERE id_carrier = ' . (int) $id_carrier
         );
@@ -451,61 +623,172 @@ class Amazonfrik extends Module
         $logger->log('================================================', 'INFO', false);
         $logger->log('Iniciando proceso de reintentos de envíos', 'INFO', false);
 
+        $states = implode(',', array_map('intval', $this->shipped_states));
+        $cutoff = date('Y-m-d H:i:s', strtotime('-2 hour'));
+
+        // Cogemos el último order_carrier por pedido
         $sql = '
-            SELECT af.*, o.current_state
+            SELECT 
+                af.id_amazonfrik_orders,
+                af.id_order,
+                af.amazon_order_id,
+                af.marketplace_id,
+                af.tracking_number AS af_tracking,
+                af.last_notification_attempt,
+                af.order_status,
+                o.current_state,
+                oc.tracking_number AS oc_tracking
             FROM `' . _DB_PREFIX_ . 'amazonfrik_orders` af
             INNER JOIN `' . _DB_PREFIX_ . 'orders` o ON af.id_order = o.id_order
+            LEFT JOIN `' . _DB_PREFIX_ . 'order_carrier` oc 
+                ON oc.id_order = o.id_order
+                AND oc.id_order_carrier = (
+                    SELECT MAX(oc2.id_order_carrier)
+                    FROM `' . _DB_PREFIX_ . 'order_carrier` oc2
+                    WHERE oc2.id_order = o.id_order
+                )
             WHERE af.shipment_notified = 0
-            AND af.order_status IN ("imported", "error") -- incluye errores previos
-            AND o.current_state IN (' . implode(',', array_map('intval', $this->shipped_states)) . ')
-            AND (af.last_notification_attempt IS NULL OR af.last_notification_attempt < "' . date('Y-m-d H:i:s', strtotime('-1 hour')) . '")
+            AND af.order_status IN ("imported", "error")
+            AND o.current_state IN (' . $states . ')
+            AND (af.last_notification_attempt IS NULL OR af.last_notification_attempt < "' . pSQL($cutoff) . '")
             ORDER BY af.date_add ASC
             LIMIT 20
         ';
 
         $orders = Db::getInstance()->executeS($sql);
+
+        if (empty($orders)) {
+            $logger->log('No hay pedidos pendientes que cumplan condiciones.', 'INFO');
+            return 0;
+        }
+
         $processed = 0;
 
-        foreach ($orders as $order) {
-            $logger->log('Procesando pedido: ' . $order['amazon_order_id'], 'INFO');
+        foreach ($orders as $row) {
+            $id_af = (int) $row['id_amazonfrik_orders'];
+            $id_order = (int) $row['id_order'];
+            $amazon_order_id = (string) $row['amazon_order_id'];
+            $current_state = (int) $row['current_state'];
 
-            // Llamar a la función principal de confirmación
-            $success = $this->markOrderAsShippedInAmazon(
-                (int) $order['id_amazonfrik_order'],
-                $order['tracking_number'], 
-                date('Y-m-d H:i:s'),
-                $order['current_state']
-            );
+            $logger->log("---- Pedido: id_amazonfrik_orders={$id_af} | id_order={$id_order} | amazon_order_id={$amazon_order_id} | state={$current_state}", 'INFO');
 
-            // Actualizar estado en BD
-            $update_data = [
-                'last_notification_attempt' => date('Y-m-d H:i:s'),
-                'date_upd' => date('Y-m-d H:i:s'),
-            ];
+            // Tracking: preferimos el de order_carrier (más “real”), si no, el guardado en amazonfrik_orders
+            $tracking = !empty($row['oc_tracking']) ? (string) $row['oc_tracking'] : (!empty($row['af_tracking']) ? (string) $row['af_tracking'] : '');
 
-            if ($success) {
-                $update_data['shipment_notified'] = 1;
-                $update_data['order_status'] = 'shipped';
-                $update_data['notification_error'] = null;
-                $logger->log('Confirmado: ' . $order['amazon_order_id'], 'INFO');
-            } else {
-                $update_data['order_status'] = 'error';
-                // El error ya se loguea en markOrderAsShippedInAmazon
-                $logger->log('Falló: ' . $order['amazon_order_id'], 'ERROR');
+            // Si NO hay tracking, registramos error en BD y marcamos last_notification_attempt para no reintentar cada hora
+            if (!$tracking) {
+                $msg = 'NO_TRACKING - No hay tracking en order_carrier (ni guardado en amazonfrik_orders). No se puede confirmar envío.';
+                $this->appendNotificationError($id_af, 'NO_TRACKING', $msg);                
+
+                $logger->log("ERROR: {$msg}", 'ERROR');
+                $processed++;
+                continue;
             }
 
-            Db::getInstance()->update(
-                'amazonfrik_orders',
-                $update_data,
-                'id_amazonfrik_order = ' . (int) $order['id_amazonfrik_order']
-            );
+            // Si hay tracking pero no estaba guardado en af, lo guardamos (sin tocar estados)
+            if (empty($row['af_tracking'])) {
+                Db::getInstance()->update(
+                    'amazonfrik_orders',
+                    [
+                        'tracking_number' => pSQL($tracking),
+                        'date_upd' => date('Y-m-d H:i:s'),
+                    ],
+                    'id_amazonfrik_orders=' . (int) $id_af
+                );
+                $logger->log("Tracking guardado en amazonfrik_orders: {$tracking}", 'INFO');
+            }
+
+            // Intento de confirmación (aquí dentro ya se actualiza order_status/shipment_notified/notification_error/last_notification_attempt)
+            $success = false;
+            try {
+                $success = (bool) $this->markOrderAsShippedInAmazon(
+                    $id_af,
+                    $tracking,
+                    date('Y-m-d H:i:s'),
+                    $current_state
+                );
+            } catch (Exception $e) {
+                // Por si algo se escapa de markOrderAsShippedInAmazon
+                $msg = 'EXCEPTION - ' . $e->getMessage();
+                $this->appendNotificationError($id_af, 'EXCEPTION', $e->getMessage());
+
+                Db::getInstance()->update(
+                    'amazonfrik_orders',
+                    [
+                        'order_status' => 'error',
+                        'shipment_notified' => 0,                        
+                        'date_upd' => date('Y-m-d H:i:s'),
+                    ],
+                    'id_amazonfrik_orders=' . (int) $id_af
+                );
+
+                $logger->log("EXCEPTION al confirmar envío: {$msg}", 'ERROR');
+                $processed++;
+                continue;
+            }
+
+            if ($success) {
+                $logger->log("OK - Confirmado en Amazon: amazon_order_id={$amazon_order_id}", 'INFO');
+            } else {
+                // markOrderAsShippedInAmazon ya habrá dejado notification_error.
+                // Aun así, logueamos un resumen
+                $res = $this->getLastShipmentResult();
+                $code = !empty($res['code']) ? $res['code'] : 'UNKNOWN';
+                $m = !empty($res['message']) ? $res['message'] : 'Fallo sin mensaje';
+                $logger->log("KO - No confirmado: code={$code} msg={$m}", 'ERROR');
+            }
 
             $processed++;
         }
 
-        $logger->log("Proceso finalizado. Pedidos procesados: {$processed}", 'INFO');
+        $logger->log("Proceso finalizado. Pedidos intentados: {$processed}", 'INFO');
         return $processed;
     }
+
+    /**
+     * Añade un mensaje a notification_error SIN pisar el anterior, con fecha.
+     * Limitar el tamaño total para evitar crecer infinito .
+     */
+    public function appendNotificationError($id_amazonfrik_orders, $code, $message, $ts = null, $maxLen = 2000)
+    {
+        $ts = $ts ?: date('Y-m-d H:i:s');
+        $code = preg_replace('/[^A-Z0-9_\-]/i', '', (string) $code);
+        $message = trim((string) $message);
+
+        if (!(int)$id_amazonfrik_orders || $message === '') {
+            return false;
+        }
+
+        $current = Db::getInstance()->getValue('
+            SELECT notification_error
+            FROM `' . _DB_PREFIX_ . 'amazonfrik_orders`
+            WHERE id_amazonfrik_orders = ' . (int) $id_amazonfrik_orders
+        );
+
+        $line = '[' . $ts . '] ' . $code . ' - ' . $message;
+
+        // Encadenar (lo nuevo arriba, para verlo rápido)
+        $new = $line;
+        if (!empty($current)) {
+            $new .= "\n" . $current;
+        }
+
+        // Recortar si se pasa de largo
+        if (Tools::strlen($new) > $maxLen) {
+            $new = Tools::substr($new, 0, $maxLen - 3) . '...';
+        }
+
+        return Db::getInstance()->update(
+            'amazonfrik_orders',
+            [
+                'notification_error' => pSQL($new, true),
+                'last_notification_attempt' => pSQL($ts),
+                'date_upd' => date('Y-m-d H:i:s'),
+            ],
+            'id_amazonfrik_orders = ' . (int) $id_amazonfrik_orders
+        );
+    }
+
 
 
 
@@ -516,25 +799,45 @@ class Amazonfrik extends Module
      */
     public function migrateExistingAmazonOrders()
     {
-        $excluded_states = [4, 5, 6, 29, 64, 65, 85]; // enviados, entregados, cancelados
+        $excluded_states = [4, 5, 6, 29, 46, 47, 64, 65, 85]; // enviados, entregados, cancelados, devueltos
+
+        //sacamos pedidos en estados $excluded_states y además los que estén en estado $shipped cuyo cambio a ese estado haya sido en las últimas 24 horas
+        $hours = 24;
 
         $sql = '
-        SELECT 
-            o.id_order,
-            o.ext_order_id AS amazon_order_id,
-            o.ext_origin AS marketplace,
-            o.ext_shipping_deadline AS shipping_deadline
-        FROM `' . _DB_PREFIX_ . 'orders` o
-        LEFT JOIN `' . _DB_PREFIX_ . 'amazonfrik_orders` af 
-               ON af.amazon_order_id = o.ext_order_id
-        WHERE 
-            o.ext_origin LIKE "Amazon.%" 
-            AND o.module = "amazon"
-            AND o.ext_order_id IS NOT NULL
-            AND af.id_amazonfrik_order IS NULL
-            AND o.current_state NOT IN (' . implode(',', array_map('intval', $excluded_states)) . ')
-        ORDER BY o.id_order ASC
-    ';
+            SELECT DISTINCT
+                o.id_order,
+                o.ext_order_id AS amazon_order_id,
+                o.ext_origin AS marketplace,
+                o.ext_shipping_deadline AS shipping_deadline
+            FROM `' . _DB_PREFIX_ . 'orders` o
+            LEFT JOIN `' . _DB_PREFIX_ . 'amazonfrik_orders` af 
+                ON af.amazon_order_id = o.ext_order_id
+            WHERE 
+                o.ext_origin LIKE "Amazon.%" 
+                AND o.module = "amazon"
+                AND o.ext_order_id IS NOT NULL
+                AND af.id_amazonfrik_orders IS NULL
+                AND (
+                    -- 1) Tu criterio original: “pendientes” (no finales)
+                    o.current_state NOT IN (' . implode(',', array_map('intval', $excluded_states)) . ')
+
+                    OR
+
+                    -- 2) Extra: los que YA están shipped/etiquetados y han cambiado hace poco
+                    (
+                        o.current_state IN (' . implode(',', array_map('intval', $this->shipped_states)) . ')
+                        AND EXISTS (
+                            SELECT 1
+                            FROM `' . _DB_PREFIX_ . 'order_history` oh
+                            WHERE oh.id_order = o.id_order
+                            AND oh.id_order_state = o.current_state
+                            AND oh.date_add >= DATE_SUB(NOW(), INTERVAL ' . (int) $hours . ' HOUR)
+                        )
+                    )
+                )
+            ORDER BY o.id_order ASC
+        ';
 
         $orders = Db::getInstance()->executeS($sql);
         $migrated_count = 0;
@@ -542,8 +845,21 @@ class Amazonfrik extends Module
         foreach ($orders as $order) {
             $marketplace_id = $this->getMarketplaceIdByOrigin($order['marketplace']);
             if (!$marketplace_id) {
-                error_log('[AmazonFrik] Marketplace desconocido: ' . $order['marketplace']);
+                error_log('[AmazonFrik] Marketplace desconocido para id_order ' . $order['id_order'] . ' - ' . $order['amazon_order_id'] . ': ' . $order['marketplace']);
+                echo '<br>Marketplace desconocido para id_order ' . $order['id_order'] . ' - ' . $order['amazon_order_id'] . ': ' . $order['marketplace'];
                 continue;
+            }
+
+            //nos aseguramos de que no existe ya la combinación amazon_order_id/ marketplace id
+            $exists = (int) Db::getInstance()->getValue('
+                SELECT 1
+                FROM `' . _DB_PREFIX_ . 'amazonfrik_orders`
+                WHERE amazon_order_id = "' . pSQL($order['amazon_order_id']) . '"
+                    AND marketplace_id = "' . pSQL($marketplace_id) . '"                
+                ');
+
+            if ($exists) {
+                continue; // ya estaba
             }
 
             // Obtener datos adicionales de Amazon
@@ -572,12 +888,16 @@ class Amazonfrik extends Module
 
             if ($result) {
                 $migrated_count++;
-                $id_amazonfrik_order = Db::getInstance()->Insert_ID();
+                $id_amazonfrik_orders = Db::getInstance()->Insert_ID();
+                if (!$id_amazonfrik_orders && method_exists(Db::getInstance(), 'insert_ID')) {
+                    $id_amazonfrik_orders = (int) Db::getInstance()->insert_ID();
+                }
 
                 // Precargar orderItems (guardará en amazonfrik_order_detail)
-                $this->getOrderItemsForShipment(
+                $notifier = new AmazonShipmentNotifier();
+                $order_items = $notifier->getOrderItemsForShipment(
                     $order['amazon_order_id'],
-                    $id_amazonfrik_order
+                    $id_amazonfrik_orders
                 );
             }
         }

@@ -10,8 +10,8 @@ if (!defined('_PS_VERSION_')) {
  */
 class AmazonFrikOrder extends ObjectModel
 {
-    public $id_amazonfrik_order;
-    public $amazon_orderja_id;
+    public $id_amazonfrik_orders;
+    public $amazon_order_id;
     public $marketplace;
     public $marketplace_id;
     public $id_order;
@@ -33,7 +33,7 @@ class AmazonFrikOrder extends ObjectModel
 
     public static $definition = array(
         'table' => 'amazonfrik_orders',
-        'primary' => 'id_amazonfrik_order',
+        'primary' => 'id_amazonfrik_orders',
         'fields' => array(
             'amazon_order_id' => array('type' => self::TYPE_STRING, 'required' => true),
             'marketplace' => array('type' => self::TYPE_STRING, 'required' => true),

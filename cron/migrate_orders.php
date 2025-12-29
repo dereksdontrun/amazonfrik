@@ -1,5 +1,8 @@
 <?php
 // migración incial de los pedidos sin confirmar que ya estén en prestashop
+
+// https://lafrikileria.com/modules/amazonfrik/cron/migrate_orders.php
+
 include(dirname(__FILE__).'/../../../config/config.inc.php');
 include(dirname(__FILE__).'/../amazonfrik.php');
 

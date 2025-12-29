@@ -10,7 +10,7 @@ if (!defined('_PS_VERSION_')) {
 class AmazonSpApiClient
 {
     private $credentials = null;
-    private $access_token = null;    
+    private $access_token = null;
 
     // Endpoint según región
     private $endpoint = 'https://sellingpartnerapi-eu.amazon.com';
@@ -36,7 +36,7 @@ class AmazonSpApiClient
     private function ensureAccessToken()
     {
         if ($this->access_token) {
-            return; 
+            return;
         }
 
         $url = 'https://api.amazon.com/auth/o2/token';
@@ -70,7 +70,7 @@ class AmazonSpApiClient
             throw new Exception('Token inválido: ' . $response);
         }
 
-        $this->access_token = $data['access_token'];        
+        $this->access_token = $data['access_token'];
     }
 
     /**
@@ -111,7 +111,31 @@ class AmazonSpApiClient
         }
 
         if ($http_code >= 400) {
-            throw new Exception("HTTP {$http_code}: {$response}");
+            // Intentar extraer errors[0].code y errors[0].message (SP-API estándar)
+            $code = null;
+            $msg = null;
+
+            $decoded = json_decode($response, true);
+            if (is_array($decoded) && !empty($decoded['errors'][0])) {
+                $code = isset($decoded['errors'][0]['code']) ? $decoded['errors'][0]['code'] : null;
+                $msg = isset($decoded['errors'][0]['message']) ? $decoded['errors'][0]['message'] : null;
+            }
+
+            // Lanza un string estable: "HTTP=400 CODE=InvalidInput MSG=..." (sin clases nuevas)
+            $parts = ['HTTP=' . $http_code];
+            if ($code)
+                $parts[] = 'CODE=' . $code;
+            if ($msg)
+                $parts[] = 'MSG=' . $msg;
+
+            // Si no hay msg, usa raw response recortada
+            if (!$msg) {
+                $raw = is_string($response) ? $response : json_encode($response);
+                $raw = (strlen($raw) > 500) ? substr($raw, 0, 500) . '...' : $raw;
+                $parts[] = 'RAW=' . $raw;
+            }
+
+            throw new Exception(implode(' ', $parts));
         }
 
         return $response ? json_decode($response, true) : null;
