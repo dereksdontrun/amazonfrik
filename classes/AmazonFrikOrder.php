@@ -1,4 +1,3 @@
-
 <?php
 if (!defined('_PS_VERSION_')) {
     exit;
@@ -22,6 +21,7 @@ class AmazonFrikOrder extends ObjectModel
     public $carrier_code;
     public $shipping_method;
     public $shipping_deadline;
+    public $purchase_date;
     public $ship_service_level;
     public $order_total;
     public $currency;
@@ -45,12 +45,13 @@ class AmazonFrikOrder extends ObjectModel
             'tracking_number' => array('type' => self::TYPE_STRING),
             'carrier_code' => array('type' => self::TYPE_STRING),
             'shipping_method' => array('type' => self::TYPE_STRING),            
-            'shipping_deadline' => array('type' => self::TYPE_DATE, 'validate' => 'isDate'),
+            'shipping_deadline' => array('type' => self::TYPE_DATE),
+            'purchase_date' => array('type' => self::TYPE_DATE),
             'ship_service_level' => array('type' => self::TYPE_STRING),
             'order_total' => array('type' => self::TYPE_FLOAT),
             'currency' => array('type' => self::TYPE_STRING),
-            'ship_date' => array('type' => self::TYPE_DATE, 'validate' => 'isDate'),
-            'last_notification_attempt' => array('type' => self::TYPE_DATE, 'validate' => 'isDate'),
+            'ship_date' => array('type' => self::TYPE_DATE),
+            'last_notification_attempt' => array('type' => self::TYPE_DATE),
             'notification_error' => array('type' => self::TYPE_STRING),
             'date_add' => array('type' => self::TYPE_DATE, 'validate' => 'isDate'),
             'date_upd' => array('type' => self::TYPE_DATE, 'validate' => 'isDate'),

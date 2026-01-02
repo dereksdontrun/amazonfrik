@@ -34,10 +34,12 @@ class AmazonOrderImporter
                 'ship_service_level' => isset($payload['ShipServiceLevel']) ? pSQL($payload['ShipServiceLevel']) : null,
                 'order_total' => isset($payload['OrderTotal']['Amount']) ? (float) $payload['OrderTotal']['Amount'] : null,
                 'currency' => isset($payload['OrderTotal']['CurrencyCode']) ? pSQL($payload['OrderTotal']['CurrencyCode']) : null,
+                'purchase_date' => isset($payload['PurchaseDate']) ? $payload['PurchaseDate'] : null,
             ];
         } catch (Exception $e) {
             error_log('[AmazonFrik] Error al obtener datos del pedido: ' . $e->getMessage());
             return null;
         }
     }
+    
 }

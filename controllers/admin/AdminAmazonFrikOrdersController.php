@@ -63,12 +63,23 @@ class AdminAmazonFrikOrdersController extends ModuleAdminController
                 'type' => 'datetime',
                 'orderby' => true
             ],
+            'purchase_date' => [
+                'title' => 'Compra (Amazon)',
+                'type' => 'datetime',
+                'orderby' => true,
+            ],
             'date_add' => [
                 'title' => 'Añadido',
                 'type' => 'datetime',
                 'orderby' => true
             ],
         ];
+
+        // Opciones del selector de paginación
+        $this->_pagination = array(20, 50, 100, 300);
+
+        // Valor por defecto
+        $this->_defaultPagination = 50;
 
         // Botones de acción
         $this->addRowAction('edit');
@@ -163,9 +174,10 @@ class AdminAmazonFrikOrdersController extends ModuleAdminController
         }
 
         //buscamos el tracking, primero en amazonfrik_orders, luego en ordercarrier
-        $tracking = $amazon_frik_order->tracking_number;
+        $tracking = (string) $amazon_frik_order->tracking_number;
 
-        if (!$tracking) {
+        if (!$this->module->isValidTracking($tracking)) {
+            //no es válido, buscamos en order_carrier
             $id_order_carrier = (int) Db::getInstance()->getValue('
                 SELECT id_order_carrier
                 FROM `' . _DB_PREFIX_ . 'order_carrier`
@@ -174,39 +186,38 @@ class AdminAmazonFrikOrdersController extends ModuleAdminController
             ');
             if ($id_order_carrier) {
                 $oc = new OrderCarrier($id_order_carrier);
-                $tracking = $oc->tracking_number;
+                $tracking = (string) $oc->tracking_number;
 
-                if ($tracking) {
+                // si lo hemos encontrado aquí, lo guardamos en amazonfrik_orders
+                if ($this->module->isValidTracking($tracking)) {
                     Db::getInstance()->update(
                         'amazonfrik_orders',
                         [
                             'tracking_number' => pSQL($tracking),
                             'date_upd' => date('Y-m-d H:i:s'),
                         ],
-                        'id_amazonfrik_orders = ' . (int) $id
+                        'id_amazonfrik_orders=' . (int) $id
                     );
                 }
             }
         }
 
-        if (!$tracking) {
-            $this->module->appendNotificationError($id, 'NO_TRACKING', 'Retry manual: no hay tracking en order_carrier ni en amazonfrik_orders');
-
-            Db::getInstance()->update(
-                'amazonfrik_orders',
-                [
-                    'last_notification_attempt' => date('Y-m-d H:i:s'),
-                    'date_upd' => date('Y-m-d H:i:s'),
-                ],
-                'id_amazonfrik_orders = ' . (int) $id
+        //validación final, si no es válido no reintentamos
+        if (!$this->module->isValidTracking($tracking)) {
+            $this->module->appendNotificationError(
+                $id,
+                'INVALID_TRACKING',
+                'Retry manual: tracking inválido o vacío. Valor="' . $tracking . '"'
             );
 
-            Tools::redirectAdmin($base . '&msg=no_tracking&id_amazonfrik_orders=' . $id);
+            Tools::redirectAdmin($base . '&msg=invalid_tracking&id_amazonfrik_orders=' . (int) $id);
         }
 
+        //obtenemos estado actual de pedido
         $order = new Order($amazon_frik_order->id_order);
-        $id_order_status_when_confirmed = $order->current_state;
+        $id_order_status_when_confirmed = (int) $order->current_state;
 
+        $success = false;
         try {
             $success = $this->module->markOrderAsShippedInAmazon(
                 $id,
@@ -221,8 +232,7 @@ class AdminAmazonFrikOrdersController extends ModuleAdminController
                 'amazonfrik_orders',
                 [
                     'order_status' => 'error',
-                    'shipment_notified' => 0,
-                    'last_notification_attempt' => date('Y-m-d H:i:s'),
+                    'shipment_notified' => 0,                    
                     'date_upd' => date('Y-m-d H:i:s'),
                 ],
                 'id_amazonfrik_orders = ' . (int) $id
@@ -341,6 +351,12 @@ class AdminAmazonFrikOrdersController extends ModuleAdminController
                 ),
                 array(
                     'type' => 'text',
+                    'label' => 'Compra (Amazon)',
+                    'name' => 'purchase_date',
+                    'readonly' => true
+                ),
+                array(
+                    'type' => 'text',
                     'label' => 'Último Intento',
                     'name' => 'last_notification_attempt',
                     'readonly' => true
@@ -364,11 +380,19 @@ class AdminAmazonFrikOrdersController extends ModuleAdminController
                     'readonly' => true
                 )
             ),
-            'submit' => array(
-                'title' => 'Volver',
-                'class' => 'btn btn-default',
-                'icon' => 'process-icon-back'
-            ),
+            // 'submit' => array(
+            //     'title' => 'Volver',
+            //     'class' => 'btn btn-default',
+            //     'icon' => 'process-icon-back'
+            // ),
+            'buttons' => array(
+                array(
+                    'href' => $this->context->link->getAdminLink('AdminAmazonFrikOrders', true),
+                    'title' => 'Volver a la lista',
+                    'icon' => 'process-icon-back',
+                    'class' => 'pull-left'
+                ),
+            )
         );
 
         // Añadir el botón de retry al final del formulario si aún no se ha confirmado el shipping
@@ -391,15 +415,15 @@ class AdminAmazonFrikOrdersController extends ModuleAdminController
         $this->fields_value['marketplace'] = $order->marketplace;
         $this->fields_value['order_status'] = $order->order_status;
         $this->fields_value['shipment_notified'] = $order->shipment_notified ? 'Sí' : 'No';
-        $this->fields_value['tracking_number'] = $order->tracking_number ?: '--';
-        $this->fields_value['carrier_code'] = $order->carrier_code ?: '--';
-        $this->fields_value['shipping_method'] = $order->shipping_method ?: '--';
-        $this->fields_value['ship_service_level'] = $order->ship_service_level ?: '--';
-        $this->fields_value['order_total_display'] = $order->order_total ? $order->order_total . ' ' . $order->currency : '--';
-        $this->fields_value['shipping_deadline'] = $order->shipping_deadline ?: '--';
-        $this->fields_value['ship_date'] = $order->ship_date ?: '--';
-        $this->fields_value['last_notification_attempt'] = $order->last_notification_attempt ?: '--';
-        $this->fields_value['notification_error'] = $order->notification_error ?: '--';
+        $this->fields_value['tracking_number'] = $order->tracking_number;
+        $this->fields_value['carrier_code'] = $order->carrier_code;
+        $this->fields_value['shipping_method'] = $order->shipping_method;
+        $this->fields_value['ship_service_level'] = $order->ship_service_level;
+        $this->fields_value['order_total_display'] = $order->order_total ? $order->order_total . ' ' . $order->currency : null;
+        $this->fields_value['shipping_deadline'] = $order->shipping_deadline;
+        $this->fields_value['ship_date'] = $order->ship_date;
+        $this->fields_value['last_notification_attempt'] = $order->last_notification_attempt;
+        $this->fields_value['notification_error'] = $order->notification_error;
         $this->fields_value['date_add'] = $order->date_add;
         $this->fields_value['date_upd'] = $order->date_upd;
 
@@ -469,7 +493,7 @@ class AdminAmazonFrikOrdersController extends ModuleAdminController
                 case 'not_found':
                     $this->errors[] = 'Pedido no encontrado.';
                     break;
-                case 'no_tracking':
+                case 'invalid_tracking':
                     $this->errors[] = 'No hay número de seguimiento en el pedido (order_carrier). No se puede confirmar envío.';
                     break;
 

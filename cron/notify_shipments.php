@@ -5,7 +5,7 @@
 //     die('Forbidden');
 // }
 
-// https://lafrikileria.com/modules/amazonfrik/cron/notify_shipments.php
+// https://lafrikileria.com/modules/amazonfrik/cron/notify_shipments.php?token=zpM1cUrzRI7rdewgjW8lyJSg6Aam0tT0
 
 //proteger el endpoint con token
 // Ej: https://.../modules/amazonfrik/cron/notify_shipments.php?token=zpM1cUrzRI7rdewgjW8lyJSg6Aam0tT0
@@ -25,6 +25,4 @@ $module = new Amazonfrik();
 // Ejecuta y devuelve cuántos ha procesado (intentados)
 $count = (int) $module->processPendingShipments();
 
-// Salida simple para monitorizar
-header('Content-Type: text/plain; charset=utf-8');
-echo "OK - Intentados: {$count}\n";
+echo 'Procesados (intentados) ' . (int)$count . ' pedidos.';

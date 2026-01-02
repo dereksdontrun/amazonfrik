@@ -15,7 +15,7 @@ class AmazonShipmentNotifier
     public function getLastError()
     {
         return $this->last_error;
-    }    
+    }
 
     public function __construct($logger = null)
     {
@@ -54,9 +54,11 @@ class AmazonShipmentNotifier
 
             return true;
         } catch (Exception $e) {
+            $rawMsg = $e->getMessage();
+
             $this->last_error = [
                 'code' => 'SPAPI_ERROR',
-                'message' => $e->getMessage(),
+                'message' => $rawMsg,
             ];
 
             // Si el mensaje tiene CODE=..., lo sacamos para tener un código más útil
@@ -66,12 +68,53 @@ class AmazonShipmentNotifier
                 $this->last_error['code'] = 'SPAPI_HTTP_' . $m[1]; // ej SPAPI_HTTP_400
             }
 
+            // Caso especial: pedido ya fulfilled / no hay paquete -> lo damos por confirmado
+            if ($this->isAlreadyFulfilledOrNoPackageError($rawMsg)) {
+                $this->last_error = [
+                    'code' => 'ALREADY_FULFILLED',
+                    'message' => 'Amazon indica que el pedido ya estaba fulfilled / no hay paquete a actualizar. Se marca como confirmado.',
+                    'context' => [
+                        'raw' => $rawMsg,
+                    ],
+                ];
+
+                if ($this->logger) {
+                    $this->logger->log("Shipment ya confirmado en Amazon (idempotencia): {$rawMsg}", 'INFO');
+                }
+
+                return true; // <- lo tratamos como OK y se marcará confirmado
+            }
+
             if ($this->logger) {
                 $this->logger->log("Error al confirmar envío: " . $e->getMessage(), 'ERROR');
             }
             return false;
         }
     }
+
+    //esta función comprueba cuando ->call lanza excepción si el pedido está o no confirmado, ya que puede suceder que estamos intentando re confirmar un pedido confirmado, a lo que la api devuelve error (http 400) con un mensaje. Buscamos ciertos patrones en la respuesta que nos sugieren que en realidad el error se refiere a que ya está confrmado, en cuyo caso marcaremos como confirmado el pedido
+    private function isAlreadyFulfilledOrNoPackageError($msg)
+    {
+        $msg = Tools::strtolower((string) $msg);
+
+        $patterns = [
+            'order already fulfilled',
+            'packagetoupdatenotfound',
+            'packagetoupdate not found', 
+            'package to update', 
+            'unable to find package to update',
+            'not finding a matching package',
+            'no matching package',
+        ];
+
+        foreach ($patterns as $p) {
+            if (strpos($msg, $p) !== false) {
+                return true;
+            }
+        }
+        return false;
+    }
+
 
     /**
      * Obtiene los orderItems para confirmar envío.

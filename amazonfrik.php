@@ -83,10 +83,28 @@ class Amazonfrik extends Module
             return false;
         }
 
-        // Registrar hook para detectar cambios de estado
-        if (!$this->registerHook('actionOrderStatusPostUpdate')) {
+        // Registrar hook para detectar cambios de estado o cambios en order carrier
+        if (
+            !$this->registerHook('actionOrderStatusPostUpdate') ||
+            !$this->registerHook('actionObjectOrderCarrierUpdateAfter')
+        ) {
             return false;
         }
+
+        // Hook custom
+        $hook_name = 'actionAmazonOrderDataReady';
+        if (!Hook::getIdByName($hook_name)) {
+            $new_hook = new Hook();
+            $new_hook->name = $hook_name;
+            $new_hook->title = 'Amazon Order Data Ready';
+            $new_hook->description = 'Se llama desde cambiatransportistaspringamazon cuando un pedido Amazon ya tiene sus datos listos en lafrips_orders';
+            $new_hook->position = 0;
+            if (!$new_hook->add())
+                return false;
+        }
+
+        if (!$this->registerHook($hook_name))
+            return false;
 
         if (!$this->installTab('AdminAmazonFrikOrders', 'AdminOrders', $this->name, 'Pedidos Amazon')) {
             return false;
@@ -94,19 +112,28 @@ class Amazonfrik extends Module
 
         return true;
 
-        // Registrar hook personalizado NO ES NECESARIO PARA PERSONALIZADOS
-        // $hook_name = 'actionAmazonOrderDataReady';
-        // if (!Hook::getIdByName($hook_name)) {
-        //     $new_hook = new Hook();
-        //     $new_hook->name = $hook_name;
-        //     $new_hook->title = 'Amazon Order Data Ready';
-        //     $new_hook->description = 'Se llama cuando el módulo cambiatransportistaspringamazon tiene la info del pedido Amazon para PrestaShop';
-        //     $new_hook->position = 0;
-        //     $new_hook->add();
-        // }
-
         // Crear tabla de control
         // return $this->createTables();
+
+        /*  SQL PARA INSTALAR HOOK SIN REINICIALIZAR MODULO
+        -- 1) Crear el hook si no existe
+            INSERT IGNORE INTO `lafrips_hook` (`name`, `title`, `description`, `position`, `live_edit`)
+            VALUES (
+            'actionAmazonOrderDataReady',
+            'Amazon Order Data Ready',
+            'Se llama desde cambiatransportistaspringamazon cuando un pedido Amazon ya tiene sus datos listos en lafrips_orders',
+            0,
+            0
+            );
+
+        -- 2) Asociar el módulo al hook
+            INSERT IGNORE INTO `lafrips_hook_module` (`id_module`, `id_hook`, `position`)
+            SELECT m.id_module, h.id_hook, 0
+            FROM `lafrips_module` m
+            JOIN `lafrips_hook` h ON h.name='actionAmazonOrderDataReady'
+            WHERE m.name='amazonfrik';
+
+        */
     }
 
     protected function installTab($classname = false, $parent = false, $module = false, $displayname = false)
@@ -175,6 +202,7 @@ class Amazonfrik extends Module
     //         `carrier_code` VARCHAR(50) NULL DEFAULT NULL COMMENT 'Amazon carrier code (e.g., CORREOS, UPS, etc.)',
     //         `shipping_method` VARCHAR(100) NULL DEFAULT NULL,
     //         `shipping_deadline` DATETIME NULL DEFAULT NULL,
+    //         `purchase_date` DATETIME NULL DEFAULT NULL,
     //         `ship_service_level` VARCHAR(50) NULL DEFAULT NULL COMMENT 'ShipServiceLevel from Amazon',
     //         `order_total` DECIMAL(20,6) NULL DEFAULT NULL COMMENT 'OrderTotal.Amount',
     //         `currency` VARCHAR(10) NULL DEFAULT NULL COMMENT 'OrderTotal.CurrencyCode',
@@ -269,6 +297,106 @@ class Amazonfrik extends Module
         return $info ? $info['origin'] : null;
     }
 
+    //como a veces el tracking aún no existe cuando el pedido cambia a etiquetado, ponemos otro hook a update de order carrier, ahí si que sabremos si hay tracking
+    public function hookActionObjectOrderCarrierUpdateAfter($params)
+    {
+        $this->handleOrderCarrierTrackingEvent($params, 'updateAfter');
+    }
+
+    protected function handleOrderCarrierTrackingEvent($params, $source = '')
+    {
+        if (empty($params['object']) || !is_object($params['object'])) {
+            return;
+        }
+
+        /** @var OrderCarrier $oc */
+        $oc = $params['object'];
+
+        $id_order = (int) $oc->id_order;
+        $tracking = isset($oc->tracking_number) ? trim((string) $oc->tracking_number) : '';
+
+        // Log (para depurar si entra o no)
+        $logger = new LoggerFrik(
+            _PS_MODULE_DIR_ . 'amazonfrik/logs/ordercarrier_hook_' . date('Ymd') . '.txt',
+            true,
+            'sergio@lafrikileria.com'
+        );
+
+        if (!$id_order) {
+            return;
+        }
+
+        // Tracking inválido ,no hacemos nada 
+        if (!$this->isValidTracking($tracking)) {
+            $logger->log("{$source}: id_order={$id_order} tracking inválido: \"" . $tracking . "\"", 'DEBUG', false);
+            return;
+        }
+
+        // Solo si el pedido está en un estado "shipped_states" (etiquetados/enviado)
+        $current_state = (int) Db::getInstance()->getValue('
+            SELECT current_state
+            FROM `' . _DB_PREFIX_ . 'orders`
+            WHERE id_order = ' . (int) $id_order . '
+        ');
+
+        if (!in_array($current_state, array_map('intval', $this->shipped_states), true)) {
+            return;
+        }
+
+        // Buscar si es un pedido Amazon pendiente
+        $row = Db::getInstance()->getRow('
+            SELECT id_amazonfrik_orders, tracking_number, shipment_notified
+            FROM `' . _DB_PREFIX_ . 'amazonfrik_orders`
+            WHERE id_order = ' . (int) $id_order);
+
+        if (!$row || (int) $row['shipment_notified'] === 1) {
+            $logger->log("{$source}: id_order={$id_order} no está en amazonfrik_orders o ya notificado.", 'DEBUG', false);
+            return;
+        }
+
+        $id_af = (int) $row['id_amazonfrik_orders'];
+
+        // Guardar tracking en amazonfrik_orders si estaba vacío o distinto
+        $af_tracking = trim((string) $row['tracking_number']);
+        if (!$this->isValidTracking($af_tracking) || $af_tracking !== $tracking) {
+            Db::getInstance()->update(
+                'amazonfrik_orders',
+                [
+                    'tracking_number' => pSQL($tracking),
+                    'date_upd' => date('Y-m-d H:i:s'),
+                ],
+                'id_amazonfrik_orders=' . (int) $id_af
+            );
+
+            $logger->log("{$source}: tracking guardado en amazonfrik_orders. id_af={$id_af} tracking={$tracking}", 'INFO', false);
+        }
+
+        // Intentar confirmación inmediata        
+        try {
+            $ok = (bool) $this->markOrderAsShippedInAmazon(
+                $id_af,
+                $tracking,
+                date('Y-m-d H:i:s'),
+                $current_state
+            );
+        } catch (Exception $e) {
+            $this->appendNotificationError($id_af, 'OC_EXCEPTION', "Hook OrderCarrier ({$source}): " . $e->getMessage());
+            $logger->log("{$source}: EXCEPTION id_af={$id_af} " . $e->getMessage(), 'ERROR', false);
+            return;
+        }
+
+        // Opcional: si falla, deja rastro específico del “tracking-event”
+        if (!$ok) {
+            $res = $this->getLastShipmentResult();
+            $code = !empty($res['code']) ? $res['code'] : 'UNKNOWN';
+            $msg = !empty($res['message']) ? $res['message'] : 'Fallo sin mensaje';
+            $this->appendNotificationError($id_af, 'OC_' . $code, 'Hook OrderCarrier (' . $source . '): ' . $msg);
+            $logger->log("{$source}: KO id_af={$id_af} code={$code} msg={$msg}", 'ERROR', false);
+        } else {
+            $logger->log("{$source}: OK id_af={$id_af} confirmado con tracking={$tracking}", 'INFO', false);
+        }
+    }
+
     // Hook que se ejecuta al cambiar el estado de un pedido
     public function hookActionOrderStatusPostUpdate($params)
     {
@@ -304,14 +432,19 @@ class Amazonfrik extends Module
         ');
 
         if (!$id_order_carrier) {
+            $this->appendNotificationError($id_amazonfrik_orders, 'NO_ORDER_CARRIER', 'Cambio de estado a enviado/etiquetado pero sin entrada en order_carrier');
             return;
         }
 
         $order_carrier = new OrderCarrier($id_order_carrier);
         $tracking_number = $order_carrier->tracking_number ?: null;
 
-        if (!$tracking_number) {
-            $this->appendNotificationError($id_amazonfrik_orders, 'NO_TRACKING', 'Cambio de estado a enviado/etiquetado pero sin tracking en order_carrier');
+        if (!$this->isValidTracking($tracking_number)) {
+            $this->appendNotificationError(
+                $id_amazonfrik_orders,
+                'INVALID_TRACKING',
+                'Cambio de estado a enviado/etiquetado pero tracking inválido: "' . $tracking_number . '"'
+            );
             return;
         }
 
@@ -342,6 +475,7 @@ class Amazonfrik extends Module
      *  - amazon_order_id
      *  - marketplace (ej. "Amazon.es")
      *  - shipping_deadline (opcional)
+     *  - purchase_date
      */
     //24/12/2025 Para que este módulo pueda recoger los nuevos pedidos mientras nos dan permisos y puedo usar la API, metemos aquí un hook personalizado que se dispara en el módulo cambiatransportistaspringamazon una vez ya están los datos de Amazon en lafrips_orders (mis campos ext_origin. ext_order_id, etc). No es necesario declararlo en prestashop
     public function hookActionAmazonOrderDataReady($params)
@@ -368,10 +502,25 @@ class Amazonfrik extends Module
         $id_order = (int) $params['id_order'];
         $amazon_order_id = pSQL($params['amazon_order_id']);
         $marketplace_origin = pSQL($params['marketplace']);      // Ej: "Amazon.es"
-        $marketplace_id = pSQL($params['marketplace_id']);        // Ej: "A1F83G8C2ARO7P"
-        $shipping_deadline = !empty($params['shipping_deadline']) ? pSQL($params['shipping_deadline']) : null;
+        $marketplace_id = pSQL($params['marketplace_id']);        // Ej: "A1F83G8C2ARO7P"       
+        $shipping_deadline = !empty($params['shipping_deadline']) ? $this->isoZToMysql($params['shipping_deadline']) : null;
+        // $purchase_date = !empty($params['purchase_date']) ? $this->isoZToMysql($params['purchase_date']) : null;
 
         // Insertar en la tabla (ignorar duplicados)
+        //Db::insert() devuelve bool (true/false), pero con el 4 parámtro true para que haga insert ignore no es así, puede devolver true, aunque no haya insertado nada. Así que comprobamos antes de tratar de insertar si ya existe
+        $exists = (bool) Db::getInstance()->getValue('
+            SELECT 1
+            FROM `' . _DB_PREFIX_ . 'amazonfrik_orders`
+            WHERE amazon_order_id = "' . pSQL($amazon_order_id) . '"
+            AND marketplace_id = "' . pSQL($marketplace_id) . '"
+        ');
+
+        if ($exists) {
+            $logger->log("Pedido ya existía: $amazon_order_id ($marketplace_id)", 'DEBUG');
+            return true;
+        }
+
+        //hacemos insert sin ignore, ya sabemos que no existe
         $result = Db::getInstance()->insert(
             'amazonfrik_orders',
             array(
@@ -381,30 +530,81 @@ class Amazonfrik extends Module
                 'id_order' => $id_order,
                 'order_status' => 'imported',
                 'shipping_deadline' => $shipping_deadline,
+                // 'purchase_date' => $purchase_date,
                 'date_add' => date('Y-m-d H:i:s'),
                 'date_upd' => date('Y-m-d H:i:s'),
             ),
-            false,
-            true // $use_cache → esto hace INSERT IGNORE            
+            false
         );
 
-        if ($result) {
-            $logger->log("Pedido registrado: $id_order - $amazon_order_id en marketplace $marketplace_origin", 'INFO');
-        } else {
-            // Verifica si fue ignorado (duplicado) o error real
-            $exists = Db::getInstance()->getValue('
-                SELECT 1 FROM `' . _DB_PREFIX_ . 'amazonfrik_orders`
-                WHERE amazon_order_id = "' . pSQL($amazon_order_id) . '"
-                AND marketplace_id = "' . pSQL($marketplace_id) . '"
-            ');
-            if ($exists) {
-                $logger->log("Pedido ya existía: $amazon_order_id", 'DEBUG');
-            } else {
-                $logger->log("Error al insertar pedido: $amazon_order_id", 'ERROR');
-            }
+        if (!$result) {
+            $logger->log("Error al insertar pedido: $amazon_order_id", 'ERROR');
+            return false;
         }
 
-        return (bool) $result;
+        // ID insertado
+        $id_amazonfrik_orders = (int) Db::getInstance()->Insert_ID();
+        if (!$id_amazonfrik_orders && method_exists(Db::getInstance(), 'insert_ID')) {
+            $id_amazonfrik_orders = (int) Db::getInstance()->insert_ID();
+        }
+
+        $logger->log("Pedido insertado: id_amazonfrik_orders={$id_amazonfrik_orders} | id_order={$id_order} | amazon={$amazon_order_id}", 'INFO');
+
+        // 2) Completar datos con SP-API (order_total, currency, ship_service_level, purchase_date)
+        try {
+            $importer = new AmazonOrderImporter($logger);
+            $order_data = $importer->getOrderDataFromAmazon($amazon_order_id);
+
+            if (is_array($order_data)) {
+                // Si purchase_date no venía por params, rellenarla desde la API
+                $purchase_from_api = !empty($order_data['purchase_date'])
+                    ? $this->isoZToMysql($order_data['purchase_date'])
+                    : null;
+
+                $update = array(
+                    'ship_service_level' => isset($order_data['ship_service_level']) ? pSQL($order_data['ship_service_level']) : null,
+                    'order_total' => isset($order_data['order_total']) ? (float) $order_data['order_total'] : null,
+                    'currency' => isset($order_data['currency']) ? pSQL($order_data['currency']) : null,
+                    'date_upd' => date('Y-m-d H:i:s'),
+                );
+
+                if (empty($purchase_date) && !empty($purchase_from_api)) {
+                    $update['purchase_date'] = pSQL($purchase_from_api);
+                }
+
+                Db::getInstance()->update(
+                    'amazonfrik_orders',
+                    $update,
+                    'id_amazonfrik_orders=' . (int) $id_amazonfrik_orders
+                );
+
+                $logger->log("Datos SP-API guardados: ship_service_level/order_total/currency" . (empty($purchase_date) && !empty($purchase_from_api) ? "/purchase_date" : ""), 'INFO');
+            } else {
+                $logger->log("WARN: SP-API no devolvió payload para completar datos del pedido $amazon_order_id", 'WARNING');
+                $this->appendNotificationError($id_amazonfrik_orders, 'ORDERDATA_EMPTY', 'Alta pedido: no se pudo completar order_total/currency/ship_service_level desde Amazon');
+            }
+        } catch (Exception $e) {
+            $logger->log("ERROR completando datos desde SP-API: " . $e->getMessage(), 'ERROR');
+            $this->appendNotificationError($id_amazonfrik_orders, 'ORDERDATA_EXCEPTION', $this->truncate($e->getMessage(), 800));
+        }
+
+        // 3) Precargar items (amazonfrik_order_detail)
+        try {
+            $notifier = new AmazonShipmentNotifier($logger);
+            $items = $notifier->getOrderItemsForShipment($amazon_order_id, $id_amazonfrik_orders);
+
+            if (empty($items)) {
+                $logger->log("WARN: No se pudieron precargar items para $amazon_order_id (id_amazonfrik_orders={$id_amazonfrik_orders})", 'WARNING');
+                $this->appendNotificationError($id_amazonfrik_orders, 'NO_ORDER_ITEMS', 'Alta pedido: no se pudieron precargar items desde Amazon');
+            } else {
+                $logger->log("Items precargados OK: " . count($items) . " para $amazon_order_id", 'INFO');
+            }
+        } catch (Exception $e) {
+            $logger->log("ERROR al precargar items: " . $e->getMessage(), 'ERROR');
+            $this->appendNotificationError($id_amazonfrik_orders, 'ORDERITEMS_EXCEPTION', $this->truncate($e->getMessage(), 800));
+        }
+
+        return true;
     }
 
     protected function setShipmentResult($ok, $code, $message, array $context = [])
@@ -448,8 +648,8 @@ class Amazonfrik extends Module
         $logger->log('================================================', 'INFO', false);
         $logger->log("Iniciando notificación de envío para amazonfrik_order ID: {$id_amazonfrik_orders}", 'DEBUG');
 
-        if (!$tracking_number) {
-            $msg = 'Pedido sin tracking number';
+        if (!$this->isValidTracking($tracking_number)) {
+            $msg = 'Pedido sin tracking number o tracking inválido';
             $logger->log($msg, 'ERROR');
             $this->appendNotificationError($id_amazonfrik_orders, 'NO_TRACKING', $msg);
             $this->setShipmentResult(false, 'NO_TRACKING', $msg, [
@@ -540,15 +740,30 @@ class Amazonfrik extends Module
         $context['order_items_count'] = is_array($order_items) ? count($order_items) : 0;
 
         // 4. Notificar a Amazon
+        //cambiamos formato fecha al esperado por SP-API
+        $ship_date_iso = $this->toIso8601UtcZ($ship_date);
+
         $success = $notifier->notifyShipment(
             $amazon_order_id,
             $marketplace_id,
             $tracking_number,
             $carrier_code,
             $shipping_method,
-            $ship_date,
+            $ship_date_iso,
             $order_items
         );
+
+        //si $success es true pero fue porque el pedido ya estaba confirmado en Amazon, lo indicamos
+        $lastErr = $notifier->getLastError();
+        if ($success && !empty($lastErr['code']) && $lastErr['code'] === 'ALREADY_FULFILLED') {
+            // Lo guardamos como “info” en notification_error (no como error)
+            $raw = !empty($lastErr['context']['raw']) ? $lastErr['context']['raw'] : '';
+            $this->appendNotificationError(
+                $id_amazonfrik_orders,
+                'ALREADY_FULFILLED',
+                $this->truncate($lastErr['message'] . ($raw ? ' | RAW: ' . $raw : ''), 1000)
+            );
+        }
 
         // 5. Actualizar BD
         $update_data = [
@@ -574,8 +789,12 @@ class Amazonfrik extends Module
             // Importante: NO pisar notification_error aquí
             unset($update_data['notification_error']);
         } else {
-            $this->setShipmentResult(true, 'OK', 'Envío confirmado correctamente en Amazon.', $context);
-            // $update_data['notification_error'] = null;
+            $codeForResult = (!empty($lastErr['code']) && $lastErr['code'] === 'ALREADY_FULFILLED') ? 'ALREADY_FULFILLED' : 'OK';
+            $msgForResult = ($codeForResult === 'ALREADY_FULFILLED')
+                ? 'Amazon indica que el pedido ya estaba fulfilled / no hay paquete a actualizar. Se marca como confirmado.'
+                : 'Envío confirmado correctamente en Amazon.';
+
+            $this->setShipmentResult(true, $codeForResult, $msgForResult, $context);
         }
 
         Db::getInstance()->update(
@@ -652,13 +871,13 @@ class Amazonfrik extends Module
             AND o.current_state IN (' . $states . ')
             AND (af.last_notification_attempt IS NULL OR af.last_notification_attempt < "' . pSQL($cutoff) . '")
             ORDER BY af.date_add ASC
-            LIMIT 20
+            LIMIT 1
         ';
 
         $orders = Db::getInstance()->executeS($sql);
 
         if (empty($orders)) {
-            $logger->log('No hay pedidos pendientes que cumplan condiciones.', 'INFO');
+            $logger->log('No hay pedidos pendientes que cumplan condiciones.', 'INFO', false);
             return 0;
         }
 
@@ -672,21 +891,37 @@ class Amazonfrik extends Module
 
             $logger->log("---- Pedido: id_amazonfrik_orders={$id_af} | id_order={$id_order} | amazon_order_id={$amazon_order_id} | state={$current_state}", 'INFO');
 
-            // Tracking: preferimos el de order_carrier (más “real”), si no, el guardado en amazonfrik_orders
-            $tracking = !empty($row['oc_tracking']) ? (string) $row['oc_tracking'] : (!empty($row['af_tracking']) ? (string) $row['af_tracking'] : '');
+            // 1) Tracking candidato: prioriza oc_tracking (order_carrier) si es válido, sobre af_tracking (amazonfrik_orders)
+            $oc_tracking = isset($row['oc_tracking']) ? trim((string) $row['oc_tracking']) : '';
+            $af_tracking = isset($row['af_tracking']) ? trim((string) $row['af_tracking']) : '';
 
-            // Si NO hay tracking, registramos error en BD y marcamos last_notification_attempt para no reintentar cada hora
-            if (!$tracking) {
-                $msg = 'NO_TRACKING - No hay tracking en order_carrier (ni guardado en amazonfrik_orders). No se puede confirmar envío.';
-                $this->appendNotificationError($id_af, 'NO_TRACKING', $msg);                
+            $tracking = '';
+            if ($this->isValidTracking($oc_tracking)) {
+                $tracking = $oc_tracking;
+            } elseif ($this->isValidTracking($af_tracking)) {
+                $tracking = $af_tracking;
+            }
 
+            // 2) Si no hay tracking válido -> error + backoff 
+            if (!$this->isValidTracking($tracking)) {
+                $msg = 'INVALID_TRACKING - Tracking no válido para confirmar envío. oc="' . $oc_tracking . '" af="' . $af_tracking . '"';
+                $this->appendNotificationError($id_af, 'INVALID_TRACKING', $msg);
                 $logger->log("ERROR: {$msg}", 'ERROR');
-                $processed++;
                 continue;
             }
 
-            // Si hay tracking pero no estaba guardado en af, lo guardamos (sin tocar estados)
-            if (empty($row['af_tracking'])) {
+            // 3) Guardar tracking en amazonfrik_orders: si el elegido es el de oc (válido) y:
+            //    - af está vacío/ inválido, o
+            //    - af es distinto
+            $need_tracking_update = false;
+
+            if ($tracking === $oc_tracking) {
+                if (!$this->isValidTracking($af_tracking) || $af_tracking !== $oc_tracking) {
+                    $need_tracking_update = true;
+                }
+            }
+
+            if ($need_tracking_update) {
                 Db::getInstance()->update(
                     'amazonfrik_orders',
                     [
@@ -695,8 +930,8 @@ class Amazonfrik extends Module
                     ],
                     'id_amazonfrik_orders=' . (int) $id_af
                 );
-                $logger->log("Tracking guardado en amazonfrik_orders: {$tracking}", 'INFO');
-            }
+                $logger->log('Tracking actualizado en amazonfrik_orders. af="' . $af_tracking . '" -> oc="' . $oc_tracking . '"', 'INFO');
+            }           
 
             // Intento de confirmación (aquí dentro ya se actualiza order_status/shipment_notified/notification_error/last_notification_attempt)
             $success = false;
@@ -716,7 +951,7 @@ class Amazonfrik extends Module
                     'amazonfrik_orders',
                     [
                         'order_status' => 'error',
-                        'shipment_notified' => 0,                        
+                        'shipment_notified' => 0,
                         'date_upd' => date('Y-m-d H:i:s'),
                     ],
                     'id_amazonfrik_orders=' . (int) $id_af
@@ -755,7 +990,7 @@ class Amazonfrik extends Module
         $code = preg_replace('/[^A-Z0-9_\-]/i', '', (string) $code);
         $message = trim((string) $message);
 
-        if (!(int)$id_amazonfrik_orders || $message === '') {
+        if (!(int) $id_amazonfrik_orders || $message === '') {
             return false;
         }
 
@@ -782,13 +1017,104 @@ class Amazonfrik extends Module
             'amazonfrik_orders',
             [
                 'notification_error' => pSQL($new, true),
-                'last_notification_attempt' => pSQL($ts),
+                'last_notification_attempt' => $ts,
                 'date_upd' => date('Y-m-d H:i:s'),
             ],
             'id_amazonfrik_orders = ' . (int) $id_amazonfrik_orders
         );
     }
 
+    //función para cambiar el formato fecha que llega de la API a Y-m-d H:i:s con hora local de Madrid
+    protected function isoZToMysql($iso)
+    {
+        if (empty($iso))
+            return null;
+
+        try {
+            $dt = new DateTime($iso); // entiende la Z como UTC
+
+            $dt->setTimezone(new DateTimeZone('Europe/Madrid'));
+
+            return $dt->format('Y-m-d H:i:s');
+        } catch (Exception $e) {
+            return null;
+        }
+    }
+
+    //función para cambiar la fecha de formato Y-m-d H:i:s a formato 2025-12-30T11:12:02Z que espera la api
+    protected function toIso8601UtcZ($dt)
+    {
+        try {
+            $d = new DateTime($dt, new DateTimeZone(Configuration::get('PS_TIMEZONE')));
+            $d->setTimezone(new DateTimeZone('UTC')); //esto además pone una hora menos que madrid
+            return $d->format('Y-m-d\TH:i:s\Z');
+        } catch (Exception $e) {
+            return gmdate('Y-m-d\TH:i:s\Z');
+        }
+    }
+
+    protected function toIso8601($dt)
+    {
+        // Si ya viene tipo ISO (contiene 'T'), lo devolvemos tal cual
+        if (is_string($dt) && strpos($dt, 'T') !== false) {
+            return $dt;
+        }
+
+        try {
+            // Usa timezone de PS, y lo manda con offset (+01:00, etc.)
+            $tz = new DateTimeZone(Configuration::get('PS_TIMEZONE'));
+            $d = new DateTime($dt, $tz);
+            return $d->format('c'); // ISO 8601 con offset
+        } catch (Exception $e) {
+            // fallback: ahora mismo en ISO
+            return date('c');
+        }
+    }
+
+    //función que comprueba que $tracking no esté vacío, sea muy corto, etc para evitar en lo posible confirmar un pedido sin tracking
+    public function isValidTracking($tracking)
+    {
+        if (!is_string($tracking)) {
+            return false;
+        }
+
+        $tracking = trim($tracking);
+
+        // Vacío o demasiado corto
+        if ($tracking === '' || Tools::strlen($tracking) < 5) {
+            return false;
+        }
+
+        // Placeholders comunes
+        $invalid = [
+            'N/A',
+            'NA',
+            'NONE',
+            'PENDING',
+            'PREPARING',
+            'ETIQUETADO',
+            'LABEL',
+            'SIN TRACKING',
+            'NO TRACKING',
+            '0',
+            '-',
+            '--',
+            '---',
+            '----',
+            '-----',
+        ];
+
+        if (in_array(Tools::strtoupper($tracking), $invalid, true)) {
+            return false;
+        }
+
+        //si todos los caracteres son iguales también invalida
+        if (preg_match('/^(.)\1{4,}$/', $tracking)) {
+            return false;
+        }
+
+        return true;
+    }
 
 
 
@@ -802,7 +1128,8 @@ class Amazonfrik extends Module
         $excluded_states = [4, 5, 6, 29, 46, 47, 64, 65, 85]; // enviados, entregados, cancelados, devueltos
 
         //sacamos pedidos en estados $excluded_states y además los que estén en estado $shipped cuyo cambio a ese estado haya sido en las últimas 24 horas
-        $hours = 24;
+        //o en las horas en que no se haya revisado
+        $hours = 13;
 
         $sql = '
             SELECT DISTINCT
@@ -876,6 +1203,7 @@ class Amazonfrik extends Module
                     'id_order' => (int) $order['id_order'],
                     'order_status' => 'imported',
                     'shipping_deadline' => $order['shipping_deadline'] ?: null,
+                    'purchase_date' => $this->isoZToMysql($order_data['purchase_date'] ?? null),
                     'ship_service_level' => $order_data['ship_service_level'] ?? null,
                     'order_total' => $order_data['order_total'] ?? null,
                     'currency' => $order_data['currency'] ?? null,
