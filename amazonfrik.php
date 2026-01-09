@@ -648,16 +648,6 @@ class Amazonfrik extends Module
         $logger->log('================================================', 'INFO', false);
         $logger->log("Iniciando notificación de envío para amazonfrik_order ID: {$id_amazonfrik_orders}", 'DEBUG');
 
-        if (!$this->isValidTracking($tracking_number)) {
-            $msg = 'Pedido sin tracking number o tracking inválido';
-            $logger->log($msg, 'ERROR');
-            $this->appendNotificationError($id_amazonfrik_orders, 'NO_TRACKING', $msg);
-            $this->setShipmentResult(false, 'NO_TRACKING', $msg, [
-                'id_amazonfrik_orders' => (int) $id_amazonfrik_orders
-            ]);
-            return false;
-        }
-
         $sql = 'SELECT amazon_order_id, marketplace_id, id_order 
             FROM `' . _DB_PREFIX_ . 'amazonfrik_orders`
             WHERE id_amazonfrik_orders = ' . (int) $id_amazonfrik_orders;
@@ -708,6 +698,30 @@ class Amazonfrik extends Module
 
         $context['id_carrier'] = (int) $id_carrier;
         $context['id_reference'] = (int) $id_reference;
+
+        // resolver / corregir tracking definitivo para Amazon (GLS internacional, etc.)
+        $tracking_number_resolved = $this->resolveTrackingForAmazon(
+            $id_order,
+            $tracking_number,
+            $id_reference,
+            $logger
+        );
+
+        // Si ha cambiado, lo reflejamos
+        if ($tracking_number_resolved !== $tracking_number) {
+            $logger->log("Tracking ajustado: '{$tracking_number}' -> '{$tracking_number_resolved}'", 'INFO');
+            $tracking_number = $tracking_number_resolved;
+            $context['tracking_number'] = (string) $tracking_number;
+        }
+
+        // Validación FINAL del tracking (después de resolver)
+        if (!$this->isValidTracking($tracking_number)) {
+            $msg = 'Pedido sin tracking number o tracking inválido tras normalización';
+            $logger->log($msg . ' | tracking="' . $tracking_number . '"', 'ERROR');
+            $this->appendNotificationError($id_amazonfrik_orders, 'INVALID_TRACKING', $msg . ' | tracking="' . $tracking_number . '"');
+            $this->setShipmentResult(false, 'INVALID_TRACKING', $msg, $context);
+            return false;
+        }
 
         // 2. Mapear a código Amazon, shipping method y nombre
         if (!isset($this->carrier_mapping[$id_reference])) {
@@ -804,6 +818,83 @@ class Amazonfrik extends Module
         );
 
         return (bool) $success;
+    }
+
+    protected function resolveTrackingForAmazon(
+        $id_order,
+        $tracking_from_oc,
+        $id_reference,
+        LoggerFrik $logger = null
+    ) {
+        $tracking_from_oc = trim((string) $tracking_from_oc);
+
+        // === CASO GLS ===
+        // Para envíos internacionales, o con EuroBusiness, el tracking que guarda su módulo en order_carrier no es el correcto, al cliente de Amazon no le sirve. El correcto lo guardan en lafrips_gls_envios en el campo num_albaran
+        if ($this->isGlsCarrierReference($id_reference)) {
+            $gls_tracking = $this->resolveGlsTracking($id_order, $tracking_from_oc, $logger);
+            if ($gls_tracking !== null) {
+                return $gls_tracking;
+            }
+        }
+
+        // si hubiera otros casos similares de tener que modificar el tracking...
+        // if ($this->isUpsCarrierReference($id_reference)) { ... }
+
+        return $tracking_from_oc;
+    }
+
+    //solo averigua si el transportista es GLS
+    protected function isGlsCarrierReference($id_reference)
+    {
+        static $glsReferences = null;
+
+        if ($glsReferences === null) {
+            $rows = Db::getInstance()->executeS('
+                SELECT DISTINCT id_reference
+                FROM `' . _DB_PREFIX_ . 'carrier`
+                WHERE external_module_name = "glsshipping"
+                AND active = 1
+                AND deleted = 0
+            ');
+            $glsReferences = array_map('intval', array_column($rows, 'id_reference'));
+        }
+
+        return in_array((int) $id_reference, $glsReferences, true);
+    }
+
+    protected function resolveGlsTracking($id_order, $tracking_from_oc, $logger = null)
+    {
+        $gls_tracking = Db::getInstance()->getValue('
+            SELECT num_albaran
+            FROM `' . _DB_PREFIX_ . 'gls_shipping`
+            WHERE id_envio_order = ' . (int) $id_order . '
+            AND num_albaran IS NOT NULL
+            AND num_albaran != ""
+            ORDER BY date_add DESC
+        ');
+
+        if (!$gls_tracking) {
+            return null;
+        }
+
+        $gls_tracking = trim((string) $gls_tracking);
+
+        if (!$this->isValidTracking($gls_tracking)) {
+            return null;
+        }
+
+        if ($gls_tracking === $tracking_from_oc) {
+            return null;
+        }
+
+        if ($logger) {
+            $logger->log(
+                "GLS tracking internacional detectado. OC='{$tracking_from_oc}' → GLS='{$gls_tracking}'",
+                'INFO'
+            );
+        }
+
+        return $gls_tracking;
     }
 
     protected function truncate($s, $max = 450)
@@ -931,7 +1022,7 @@ class Amazonfrik extends Module
                     'id_amazonfrik_orders=' . (int) $id_af
                 );
                 $logger->log('Tracking actualizado en amazonfrik_orders. af="' . $af_tracking . '" -> oc="' . $oc_tracking . '"', 'INFO');
-            }           
+            }
 
             // Intento de confirmación (aquí dentro ya se actualiza order_status/shipment_notified/notification_error/last_notification_attempt)
             $success = false;

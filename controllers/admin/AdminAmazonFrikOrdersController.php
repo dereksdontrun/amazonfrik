@@ -14,6 +14,18 @@ class AdminAmazonFrikOrdersController extends ModuleAdminController
         $this->lang = false;
         $this->bootstrap = true;
 
+        // JOIN a ps_orders para sacar current_state
+        $this->_join .= ' LEFT JOIN `' . _DB_PREFIX_ . 'orders` o ON (o.id_order = a.id_order) ';
+
+        // JOIN a order_state y order_state_lang para mostrar el nombre del estado en el idioma actual y el color del estado
+        $this->_join .= ' LEFT JOIN `' . _DB_PREFIX_ . 'order_state` os ON (os.id_order_state = o.current_state) ';
+        $this->_join .= ' LEFT JOIN `' . _DB_PREFIX_ . 'order_state_lang` osl 
+                 ON (osl.id_order_state = o.current_state AND osl.id_lang = 1) ';
+
+        // Campos extra en el SELECT
+        $this->_select .= ' o.current_state AS ps_current_state, os.color AS ps_state_color, osl.name AS ps_state_name ';
+
+
         // Campos a mostrar en la lista
         $this->fields_list = [
             'id_amazonfrik_orders' => [
@@ -33,6 +45,12 @@ class AdminAmazonFrikOrdersController extends ModuleAdminController
                 'title' => 'Pedido PrestaShop',
                 'callback' => 'printOrderLink',
                 'remove_onclick' => true, //para que al pulsar el link de id_order no entre en este controlador, pero solo en esta columna
+            ],
+            'ps_state_name' => [
+                'title' => 'Estado PS',
+                'orderby' => true,
+                'filter_key' => 'osl!name',
+                'callback' => 'renderPsOrderState',
             ],
             'order_status' => [
                 'title' => 'Estado',
@@ -86,6 +104,46 @@ class AdminAmazonFrikOrdersController extends ModuleAdminController
         $this->addRowAction('retry');
 
         parent::__construct();
+    }
+
+    public function renderPsOrderState($value, $row)
+    {
+        $name = trim((string) $value);
+        $id = isset($row['ps_current_state']) ? (int) $row['ps_current_state'] : 0;
+        $color = isset($row['ps_state_color']) ? trim((string) $row['ps_state_color']) : '';
+
+        if ($name === '' && !$id) {
+            return '-';
+        }
+        if ($name === '') {
+            $name = 'Estado #' . $id;
+        }
+
+        // Validar color (#RRGGBB). Si no, fallback
+        if (!preg_match('/^#[0-9A-Fa-f]{6}$/', $color)) {
+            $color = '#999999';
+        }
+
+        // === Calcular luminancia para decidir color del texto, ya que fondo amarillo con letras blancas apenas se puede leer ===
+        $r = hexdec(substr($color, 1, 2));
+        $g = hexdec(substr($color, 3, 2));
+        $b = hexdec(substr($color, 5, 2));
+
+        // Fórmula estándar de luminancia relativa
+        $luminance = (0.299 * $r + 0.587 * $g + 0.114 * $b);
+
+        // Umbral: si es claro → texto negro
+        $textColor = ($luminance > 160) ? '#000000' : '#ffffff';
+
+        return sprintf(
+            '<span class="badge" style="background:%s; color:%s; padding:4px 8px; border-radius:3px; font-weight:600;">%s</span>',
+        //  <span class="text-muted">(#%d)</span>',  Esto sacaría el id de estado junto al nombre
+            $color,
+            $textColor,
+            Tools::safeOutput($name),
+            $id
+        );
+       
     }
 
     public function renderOrderStatus($value, $row = null)
@@ -232,7 +290,7 @@ class AdminAmazonFrikOrdersController extends ModuleAdminController
                 'amazonfrik_orders',
                 [
                     'order_status' => 'error',
-                    'shipment_notified' => 0,                    
+                    'shipment_notified' => 0,
                     'date_upd' => date('Y-m-d H:i:s'),
                 ],
                 'id_amazonfrik_orders = ' . (int) $id
